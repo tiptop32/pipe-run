@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QA Pipe</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<!-- ── Setup (first run) ── -->
+<div data-view="setup" class="auth-screen" style="display:none">
+  <div class="auth-box">
+    <h1>QA Pipe</h1>
+    <p class="auth-hint">
+      Токен хранится в браузере (IndexedDB), зашифрован AES-256-GCM + PBKDF2.<br>
+      Сервер видит токен только в заголовке запроса — не сохраняет его.
+    </p>
+    <form id="setupForm" onsubmit="onSetup(event)">
+      <div class="field">
+        <label>GitLab токен</label>
+        <input id="setupToken" type="password" placeholder="glpat-xxxxxxxxxxxx" autocomplete="off" required>
+      </div>
+      <div class="field">
+        <label>Мастер-пароль</label>
+        <input id="setupPass" type="password" placeholder="Придумайте пароль для шифрования" required>
+      </div>
+      <div class="field">
+        <label>Повторите мастер-пароль</label>
+        <input id="setupPass2" type="password" placeholder="Повторите пароль" required>
+      </div>
+      <button type="submit" class="primary">Сохранить и войти</button>
+    </form>
+  </div>
+</div>
+
+<!-- ── Unlock ── -->
+<div data-view="unlock" class="auth-screen" style="display:none">
+  <div class="auth-box">
+    <h1>QA Pipe</h1>
+    <p class="auth-hint">Введите мастер-пароль для расшифровки токена.</p>
+    <form id="unlockForm" onsubmit="onUnlock(event)">
+      <div class="field">
+        <label>Мастер-пароль</label>
+        <input id="unlockPass" type="password" placeholder="Мастер-пароль" autofocus required>
+      </div>
+      <button type="submit" class="primary">Войти</button>
+      <br><br>
+      <button type="button" class="link" onclick="logout()">Сбросить токен (выйти)</button>
+    </form>
+  </div>
+</div>
+
+<!-- ── Add Project ── -->
+<div data-view="addProject" style="display:none; flex-direction:column; min-height:100vh">
+  <div id="app-shell" style="display:contents">
+    <header>
+      <h1>QA Pipe</h1>
+      <nav id="projectTabs"></nav>
+      <div class="header-actions">
+        <button onclick="lock()">🔒 Заблокировать</button>
+        <button onclick="logout()">Выйти</button>
+      </div>
+    </header>
+  </div>
+  <div class="page-center">
+    <div class="page-box">
+      <h2>Добавить проект</h2>
+      <form id="addProjectForm" onsubmit="onAddProject(event)">
+        <div class="field">
+          <label>GitLab Project ID <span style="color:var(--failed)">*</span></label>
+          <input id="addProjectId" type="number" placeholder="12345" required>
+          <small>Найдите ID на странице проекта в GitLab (Settings → General)</small>
+        </div>
+        <div class="field">
+          <label>Название вкладки <span style="color:var(--failed)">*</span></label>
+          <input id="addProjectName" type="text" placeholder="My Repo" required>
+        </div>
+        <div class="field">
+          <label>Путь к Allure results в артефактах <small>(опционально)</small></label>
+          <input id="addProjectAllure" type="text" placeholder="artifacts/allure-results">
+          <small>Если не указать — вкладка Allure не будет доступна</small>
+        </div>
+        <button type="submit" class="primary">Добавить проект</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- ── Main App ── -->
+<div data-view="main" id="app-shell" style="display:none; flex-direction:column; min-height:100vh">
+  <header>
+    <h1>QA Pipe</h1>
+    <nav id="projectTabs"></nav>
+    <div class="header-actions">
+      <button onclick="lock()">🔒</button>
+      <button onclick="logout()">Выйти</button>
+    </div>
+  </header>
+
+  <main>
+    <p class="section-title">Custom Pipelines</p>
+
+    <!-- Create form -->
+    <form id="createConfigForm" class="create-form" onsubmit="onCreateConfig(event)">
+      <div class="field">
+        <label>Название</label>
+        <input id="newConfigName" type="text" placeholder="smoke-tests" required>
+      </div>
+      <div class="field">
+        <label>Ветка / ref</label>
+        <input id="newConfigRef" type="text" placeholder="main">
+      </div>
+      <button type="submit">+ Создать</button>
+    </form>
+
+    <!-- Pipeline list -->
+    <div id="configList"></div>
+  </main>
+</div>
+
+<!-- Toast notification -->
+<div id="toast" class="toast"></div>
+
+<script src="/static/js/auth.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

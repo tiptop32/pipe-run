@@ -1,47 +1,37 @@
-# QA Pipe — Open Source Edition
+# QA Pipe — Open Source Edition (Local-First + Docker)
 
 ## Overview
 
-Создание открытого инструмента для QA-инженеров на базе qa-tools, без корпоративных зависимостей (Keycloak, Allure TestOps, X5-инфраструктура). Инструмент запускается через `uv run`, хранит данные в SQLite, работает с любым GitLab-инстансом.
-
-**Проблема:** qa-tools жёстко привязан к X5-инфраструктуре (Keycloak, scm.x5.ru, allure.x5.ru) и не пригоден для внешнего использования.
-
-**Решение:** адаптировать кодовую базу qa-tools — убрать всё корпоративное, упростить конфиг до `config.json`, убрать мультипользовательность.
+Создание открытого инструмента для QA-инженеров. Развёртывается в Docker, доступен нескольким пользователям.
+Токен GitLab хранится **в браузере** (IndexedDB, AES-256-GCM), а не на сервере — подход Local-First.
+Каждый пользователь сам добавляет свои проекты (вкладки). Данные синхронизируются через сервер (ключ — gitlab_user_id).
 
 **Acceptance criteria:**
-- `uv run qa-pipe` запускается без ошибок
-- Создание custom pipeline и просмотр статуса работает
-- Генерация Allure отчёта из артефактов GitLab работает
-- Все тесты проходят
-- Нет hardcoded X5 URL/токенов в репо
+- `docker compose up` запускает сервис без ошибок
+- Несколько пользователей могут использовать один инстанс независимо
+- Создание custom pipeline, просмотр расписаний, генерация Allure отчёта — работают
+- Данные не теряются при перезапуске контейнера (volume)
+- Все тесты проходят, нет X5/Keycloak зависимостей
 
 ## Context (from discovery)
 
-- **Источник:** `/Volumes/My Shared Files/x5/git_reps/qa-tools/` — FastAPI + SQLAlchemy async + aiosqlite + Alembic
-- **Целевой репо:** `/Volumes/My Shared Files/git_reps/qa-pipe/` — сейчас пустой
-- **Удаляем:** `auth/`, `allure_fetcher.py`, `PipelineAllureCache` модель, Keycloak config, X5-specific `get_recent_pipelines_with_tests`
-- **Удаляем:** `py-configurator` (внутренний X5-пакет) → простой JSON + env лоадер
-- **Сохраняем:** `features/pipelines/` (Custom pipelines, allure_report.py), `features/gitlab/` (GitLab httpx клиент)
-- **Решение по logging:** переписываем `logging.py` без `asgi-correlation-id` и `common/formatters/` (упрощение)
-- **Решение по Alembic vs create_all:** убираем `create_all` из lifespan, запускаем `alembic upgrade head` при старте
-- **Решение по verify=False:** добавляем `GITLAB_VERIFY_SSL: bool = True` в конфиг
-- **Решение по ALLURE_RESULTS_PATH:** удаляем из конфига; вместо этого добавляем `REPORTS_DIR` (путь к папке где хранятся Allure отчёты, default `./allure_reports`)
-- **Решение по tools/ feature:** переносим (`/tools/` — простая страница инструментов)
-- **Примечание:** `python-gitlab` — sync-only, несовместима с async FastAPI. Оставляем httpx-клиент
+- **Целевой репо:** `/Volumes/My Shared Files/git_reps/qa-pipe/`
+- **Уже реализовано (старая архитектура):** конфиг, db/base, модели без user_id, CRUD без user_id, GitLab клиент, тесты
+- **GitLab клиент** (`gitlab.py`) — не требует изменений, токен передаётся при создании
+- **Паттерн хранения токена** — из оригинального qa-pipe (IndexedDB + AES-256-GCM + Web Crypto API)
 
 ## Development Approach
 
 - **Testing approach:** Regular (код → потом тесты)
-- Реализуем по одному модулю, начиная с фундамента (конфиг → БД → клиент → API → UI)
+- Реализуем слоями: конфиг → модели → auth → CRUD → API → Docker → UI
 - После каждой задачи запускаем `uv run pytest`
-- Обратная совместимость с qa-tools не нужна
+- Обратная совместимость со старой архитектурой не нужна
 
 ## Testing Strategy
 
-- **Unit tests:** конфиг-лоадер, CRUD, Allure report статусы
-- **Integration:** GitLab клиент через `respx` (mock httpx), API эндпоинты через `AsyncClient`
-- **async тесты:** `asyncio_mode = "auto"` в pyproject.toml, `conftest.py` с in-memory SQLite фикстурой
-- **E2E:** не планируются
+- **Unit tests:** конфиг, CRUD (in-memory SQLite), auth middleware (mock httpx)
+- **Integration:** GitLab клиент через `respx`, API через `AsyncClient`
+- **async тесты:** `asyncio_mode = "auto"`, conftest с in-memory SQLite фикстурой
 - Test command: `uv run pytest`
 
 ## Progress Tracking
@@ -51,26 +41,26 @@
 
 ## Solution Overview
 
-Копируем структуру qa-tools, удаляем всё корпоративное, упрощаем. Ключевые изменения:
+**Local-First + Stateless Auth:**
+1. Браузер хранит токен зашифрованным в IndexedDB (AES-256-GCM + PBKDF2, master password)
+2. Каждый запрос несёт заголовок `PRIVATE-TOKEN: <gitlab_token>`
+3. Middleware: извлекает токен → `GET /api/v4/user` → `gitlab_user_id` → `request.state.user_id`
+4. Все данные на сервере привязаны к `user_id`
 
-1. `py-configurator` → `config_loader.py` (json + env override, Pydantic Settings)
-2. `auth/` → удаляется полностью, все `Depends(get_current_user)` убираем
-3. `user_id` → убирается из всех моделей и CRUD
-4. `PipelineAllureCache` + `allure_fetcher.py` → удаляем
-5. GitLabClient → убираем `project_path`, `bot_display_name`; добавляем `verify_ssl`; удаляем `get_recent_pipelines_with_tests`
-6. `logging.py` → переписываем без `asgi-correlation-id` и JSON-formatter
-7. Lifespan: `alembic upgrade head` вместо `create_all`
-8. UI: убираем auth-блоки, allure TestOps ссылки, allure_cache из ответов
+**Multi-project tabs:**
+- Пользователь добавляет проекты вручную (gitlab_project_id, display_name, опциональный allure_results_path)
+- Таблица `user_projects` хранит проекты каждого пользователя
+
+**Docker:**
+- Python + Allure CLI (Java) в одном образе
+- SQLite + volume для персистентности
 
 ## Technical Details
 
-**Конфиг (`config.json`):**
+**Конфиг сервера (`config.json`) — минимальный:**
 ```json
 {
   "GITLAB_BASE_URL": "https://gitlab.com",
-  "GITLAB_TOKEN": "glpat-xxx",
-  "GITLAB_PROJECT_ID": 123,
-  "GITLAB_VERIFY_SSL": true,
   "REPORTS_DIR": "./allure_reports",
   "DATABASE_URL": "sqlite+aiosqlite:///./data.db",
   "HOST": "0.0.0.0",
@@ -79,216 +69,242 @@
 }
 ```
 
-**Модели БД (упрощённые):**
-- `CustomPipeline`: без `user_id`; поля: id, project_id, name, ref, variables, seeded_from_schedule_id, last_pipeline_id, last_pipeline_status, last_run_at, created_at, updated_at
-- `ScheduleBookmark`: без `user_id`; поля: id, project_id, schedule_id, display_name, created_at
-- `PipelineAllureCache`: **удаляем полностью**
-- `db/models.py`: агрегатор импортов (нужен для регистрации метаданных в Alembic)
+**Auth flow:**
+```
+Browser → PRIVATE-TOKEN header → Middleware → GET /api/v4/user → user_id → request.state
+```
 
-**pyproject.toml — зависимости:**
-- Убираем: `asyncpg`, `py-configurator`, X5 Artifactory index, `orjson`, `PyYAML`
-- Добавляем: `python-dotenv`
-- Оставляем: `fastapi`, `uvicorn`, `httpx`, `sqlalchemy[asyncio]`, `aiosqlite`, `alembic`, `jinja2`, `aiofiles`, `python-multipart`, `asgi-correlation-id` (опционально, убрать в logging-задаче)
-- Dev: `pytest`, `pytest-asyncio`, `respx`
+**DB Models:**
+```
+user_projects:        id (UUID PK), user_id (int, gitlab), gitlab_project_id (int),
+                      display_name (str), allure_results_path (str|null), created_at
 
-**Статические файлы для переноса:**
-- `static/js/htmx.min.js`
-- `static/pipelines.js` (или `static/js/pipelines.js`)
-- `static/css/` (все файлы)
-- `static/allure_reports/.gitkeep` (создать пустую директорию)
+custom_pipelines:     id (UUID PK), user_id (int), project_id (UUID FK→user_projects),
+                      name, ref, variables (JSON), seeded_from_schedule_id,
+                      last_pipeline_id, last_pipeline_status, last_run_at, created_at, updated_at
+
+schedule_bookmarks:   id (UUID PK), user_id (int), project_id (UUID FK→user_projects),
+                      schedule_id (int), display_name (str|null), created_at
+
+allure_reports:       pipeline_id (int PK), gitlab_project_id (int),
+                      status (not_started|pending|ready|error), error_text (str|null), created_at
+```
+
+**Allure:** генерация локальная, Allure CLI в Docker-образе.
+Если `allure_results_path` у проекта null — вкладка Allure скрыта.
 
 ## What Goes Where
 
-**Implementation Steps** — всё ниже реализуется в этом репо.
+**Implementation Steps** — всё реализуется в этом репо.
 
 **Post-Completion:**
 - Ручное тестирование с реальным GitLab
-- Убедиться что `data.db` сохраняется между перезапусками
-- Опубликовать репо (проверить что нет X5 URL/токенов)
+- Убедиться что `data.db` сохраняется между `docker compose restart`
+- Проверить генерацию Allure с реальными артефактами
 
 ## Implementation Steps
 
-### Task 1: Bootstrap — структура, pyproject.toml, pytest конфиг
+### Task 1: Bootstrap ✅
+
+Уже выполнено: `pyproject.toml`, `alembic.ini`, `.gitignore`, `conftest.py`, структура директорий.
+
+### Task 2: Обновить конфиг — убрать GITLAB_TOKEN/PROJECT_ID/VERIFY_SSL
 
 **Files:**
-- Create: `pyproject.toml`
-- Create: `pytest.ini` (или секция в pyproject.toml)
-- Create: `tests/__init__.py`
-- Create: `tests/conftest.py`
-- Create: `src/app/__init__.py`
-- Create: `.gitignore`
-- Create: `alembic.ini`
+- Modify: `src/app/conf/config_model.py`
+- Modify: `config.example.json`
+- Modify: `tests/test_config.py`
 
-- [ ] создать структуру директорий: `src/app/{conf,db,features/{pipelines,gitlab,tools},static,templates}`, `tests/`
-- [ ] создать `pyproject.toml`: убрать asyncpg / py-configurator / orjson / PyYAML / X5 индекс; добавить python-dotenv; dev deps: pytest, pytest-asyncio, respx
-- [ ] добавить в pyproject.toml: `[tool.pytest.ini_options] asyncio_mode = "auto"`
-- [ ] создать `alembic.ini` (стандартный, DATABASE_URL через env var `QA_PIPE_DB_URL`)
-- [ ] создать `tests/conftest.py` с in-memory SQLite фикстурой (`async_session`)
-- [ ] создать `.gitignore` (data.db, config.json, __pycache__, .venv, allure_reports/)
-- [ ] проверить `uv sync` — зависимости устанавливаются без ошибок
-- [ ] smoke-тест: `uv run python -c "import app"` проходит
-- [ ] `uv run pytest` — 0 тестов, 0 ошибок
+- [x] убрать `GITLAB_TOKEN`, `GITLAB_PROJECT_ID`, `GITLAB_VERIFY_SSL` из `Settings`
+- [x] обновить `config.example.json` — только: GITLAB_BASE_URL, REPORTS_DIR, DATABASE_URL, HOST, PORT, LOGLEVEL
+- [x] обновить `tests/test_config.py` — убрать тесты на удалённые поля
+- [x] `uv run pytest tests/test_config.py` — проходит ✅
 
-### Task 2: Модуль конфигурации
+### Task 3: Обновить DB модели — UserProject, user_id, AllureReport
 
 **Files:**
-- Create: `src/app/conf/__init__.py`
-- Create: `src/app/conf/config_loader.py`
-- Create: `src/app/conf/config_model.py`
-- Create: `src/app/conf/logging.py`
-- Create: `config.example.json`
-- Create: `tests/test_config.py`
+- Modify: `src/app/features/pipelines/models.py`
+- Modify: `src/app/db/migrations/versions/0001_initial.py`
+- Modify: `tests/test_db.py`
 
-- [ ] создать `config_model.py` — Pydantic `Settings` с полями: GITLAB_BASE_URL, GITLAB_TOKEN, GITLAB_PROJECT_ID, GITLAB_VERIFY_SSL (default True), REPORTS_DIR (default "./allure_reports"), DATABASE_URL, HOST, PORT, LOGLEVEL; без Keycloak/AllureTestOps/SecretStr
-- [ ] создать `config_loader.py` — читает `config.json` из CWD, env vars как override (prefix `QA_PIPE_`); без py-configurator
-- [ ] переписать `logging.py` — стандартный logging без `asgi-correlation-id` и JSONFormatter (plain text handler достаточно)
-- [ ] создать `config.example.json` с примером всех полей
-- [ ] написать тесты: загрузка из JSON-файла, override через env var, ошибка на отсутствующий GITLAB_TOKEN
-- [ ] `uv run pytest tests/test_config.py` — проходит
+- [x] добавить `UserProject` модель (user_id int, gitlab_project_id int, display_name, allure_results_path nullable)
+- [x] добавить `user_id: int` в `CustomPipeline` (nullable=False)
+- [x] изменить `project_id` в `CustomPipeline` на UUID FK → user_projects.id
+- [x] добавить `user_id: int` в `ScheduleBookmark` (nullable=False)
+- [x] изменить `project_id` в `ScheduleBookmark` на UUID FK → user_projects.id
+- [x] добавить `AllureReport` модель (pipeline_id int PK, gitlab_project_id int, status, error_text, created_at)
+- [x] переписать миграцию `0001_initial.py` с четырьмя таблицами
+- [x] обновить `tests/test_db.py` для новых моделей
+- [x] `uv run pytest tests/test_db.py` — проходит
 
-### Task 3: База данных — модели, агрегатор, Alembic
-
-**Files:**
-- Create: `src/app/db/__init__.py`
-- Create: `src/app/db/base.py`
-- Create: `src/app/db/models.py`
-- Create: `src/app/db/migrations/env.py`
-- Create: `src/app/db/migrations/script.py.mako`
-- Create: `src/app/db/migrations/versions/0001_initial.py`
-- Create: `src/app/features/pipelines/models.py`
-- Create: `tests/test_db.py`
-
-- [ ] перенести `db/base.py` — обновить: DATABASE_URL из `config.DATABASE_URL` (plain str, без SecretStr); убрать asyncpg; оставить aiosqlite
-- [ ] создать `features/pipelines/models.py` — `CustomPipeline` и `ScheduleBookmark` **без** `user_id`; `PipelineAllureCache` **не создавать**; все поля согласно Technical Details
-- [ ] создать `db/models.py` — только импорты моделей (нужен для регистрации в Base.metadata)
-- [ ] настроить Alembic `env.py` для async SQLite (async engine в `run_migrations_online`)
-- [ ] создать первую миграцию `0001_initial.py` с обеими таблицами
-- [ ] написать тест: применить `alembic upgrade head` к in-memory SQLite, проверить что таблицы существуют
-- [ ] `uv run pytest tests/test_db.py` — проходит
-
-### Task 4: CRUD операции
+### Task 4: Обновить CRUD — user_id, UserProject CRUD
 
 **Files:**
-- Create: `src/app/features/pipelines/crud.py`
-- Create: `src/app/features/pipelines/schemas.py`
-- Create: `tests/test_crud.py`
+- Modify: `src/app/features/pipelines/crud.py`
+- Modify: `tests/test_crud.py`
 
-- [ ] перенести `crud.py` из qa-tools — убрать все параметры `user_id` из функций; убрать `allure_cache_to_dict`, `get_allure_cache`, `upsert_allure_cache`
-- [ ] аудит сигнатур: `update_custom_pipeline`, `get_schedule_bookmark`, `delete_schedule_bookmark`, `delete_custom_pipeline` — все вызовы без `user_id`
-- [ ] перенести `schemas.py` — убрать `user_id` из всех схем; убрать все Allure TestOps поля
-- [ ] написать тесты: create/list/update/delete для `CustomPipeline` и `ScheduleBookmark` (async, in-memory SQLite через conftest фикстуру)
-- [ ] `uv run pytest tests/test_crud.py` — проходит
+- [x] добавить `user_id` параметр во все функции CustomPipeline и ScheduleBookmark
+- [x] фильтровать запросы по `user_id` (`.where(Model.user_id == user_id)`)
+- [x] добавить CRUD для `UserProject`: create, list, get, delete
+- [x] добавить CRUD для `AllureReport`: upsert_status, get_status
+- [x] обновить `tests/test_crud.py` с user_id во всех вызовах
+- [x] `uv run pytest tests/test_crud.py` — проходит
 
-### Task 5: GitLab API клиент
+### Task 5: Auth middleware и deps
 
 **Files:**
-- Create: `src/app/features/pipelines/gitlab.py`
-- Create: `tests/test_gitlab_client.py`
+- Create: `src/app/auth/__init__.py`
+- Create: `src/app/auth/middleware.py`
+- Create: `src/app/auth/deps.py`
+- Create: `tests/test_auth.py`
 
-- [ ] перенести `gitlab.py` из qa-tools
-- [ ] убрать параметры `project_path`, `bot_display_name` из `__init__`
-- [ ] добавить `verify_ssl: bool = True` — передавать в `httpx.AsyncClient(verify=verify_ssl)`
-- [ ] **удалить** `get_recent_pipelines_with_tests` (X5-специфичный метод с `_BOT_PATTERN`, "prepare" job, ENV/PYTEST_MARKS переменными)
-- [ ] убрать любые `verify=False` hardcode
-- [ ] написать тесты через `respx`: `run_pipeline` (success, GitLabAPIError), `get_schedule`, `download_job_artifacts`, `get_jobs`
-- [ ] `uv run pytest tests/test_gitlab_client.py` — проходит
+- [x] создать `middleware.py` — `GitLabAuthMiddleware(BaseHTTPMiddleware)`:
+  - пропускать `/health`, `/static`, `/favicon.ico` без токена
+  - читать `PRIVATE-TOKEN` из заголовка; если нет — 401
+  - `GET {GITLAB_BASE_URL}/api/v4/user` с токеном
+  - если 401/403 от GitLab — 401 клиенту
+  - записывать `request.state.user_id` и `request.state.gitlab_token`
+- [x] создать `deps.py` — FastAPI dependency `get_current_user() -> int` (читает `request.state.user_id`)
+- [x] создать dependency `get_gitlab_client(request) -> GitLabClient` (токен + project_id из path/body)
+- [x] написать тесты: middleware с валидным токеном (mock respx), невалидным, без токена
+- [x] `uv run pytest tests/test_auth.py` — проходит ✅
 
-### Task 6: Allure Report генератор
+### Task 6: GitLab клиент ✅
+
+Уже реализован и протестирован (`src/app/features/pipelines/gitlab.py`, `tests/test_gitlab_client.py`).
+Не требует изменений — токен передаётся при создании `GitLabClient(base_url, access_token, project_id)`.
+
+### Task 7: Allure Report генератор
 
 **Files:**
 - Create: `src/app/features/pipelines/allure_report.py`
 - Create: `tests/test_allure_report.py`
 
-- [ ] перенести `allure_report.py` из qa-tools
-- [ ] заменить hardcoded `REPORTS_DIR` — брать из `config.REPORTS_DIR` (Path)
-- [ ] убрать зависимость на `GitLabClient` из сигнатуры (передавать явно или создавать через config внутри)
-- [ ] написать тесты: `report_status` (все 4 статуса), `_extract_allure_results` с реальным in-memory zip
+- [ ] создать `allure_report.py`:
+  - `AllureStatus = Literal["not_started", "pending", "ready", "error"]`
+  - `async def generate_report(gitlab_client, job_id, report_dir) -> Path` — скачать артефакты, распаковать zip, запустить `allure generate`
+  - `async def get_report_status(pipeline_id, session) -> AllureStatus` — читать из `allure_reports` таблицы
+- [ ] написать тесты: `get_report_status` для всех статусов, mock для download + extract
 - [ ] `uv run pytest tests/test_allure_report.py` — проходит
 
-### Task 7a: API эндпоинты — Custom Pipelines
+### Task 8: API — User Projects
+
+**Files:**
+- Create: `src/app/features/projects/router.py`
+- Create: `src/app/features/projects/__init__.py`
+- Create: `tests/test_api_projects.py`
+
+- [ ] `POST /api/v1/projects` — создать проект (gitlab_project_id, display_name, allure_results_path?)
+- [ ] `GET /api/v1/projects` — список проектов пользователя
+- [ ] `DELETE /api/v1/projects/{id}` — удалить проект
+- [ ] использовать `Depends(get_current_user)` для user_id
+- [ ] написать тесты через `AsyncClient` с мок-middleware
+- [ ] `uv run pytest tests/test_api_projects.py` — проходит
+
+### Task 9: API — Custom Pipelines
 
 **Files:**
 - Create: `src/app/features/pipelines/api.py`
 - Create: `src/app/features/pipelines/__init__.py`
 - Create: `tests/test_api_pipelines.py`
 
-- [ ] перенести `features/pipelines/api.py` из qa-tools
-- [ ] убрать все `Depends(get_current_user)` и `UserSession`
-- [ ] убрать `fetch_and_cache_allure` вызовы и `allure_cache` из ответов `configs_enriched`
-- [ ] убрать `allure_cache` из ответов (поле `allure_cache: null` не нужно)
-- [ ] проверить что `PATCH /configs/{id}/pipeline-status` остаётся (нужен для опроса статуса)
-- [ ] написать тесты: POST /configs (создание), GET /configs (список), POST /configs/{id}/run (mock gitlab), DELETE /configs/{id}
+- [ ] перенести эндпоинты из qa-tools, адаптировать: добавить `user_id` через `Depends`, добавить `project_id` из пути или тела
+- [ ] убрать `allure_cache` из ответов, убрать `fetch_and_cache_allure` вызовы
+- [ ] `POST /api/v1/projects/{project_id}/configs`
+- [ ] `GET /api/v1/projects/{project_id}/configs`
+- [ ] `POST /api/v1/projects/{project_id}/configs/{id}/run` — запускает pipeline через GitLabClient
+- [ ] `PATCH /api/v1/projects/{project_id}/configs/{id}/pipeline-status`
+- [ ] `DELETE /api/v1/projects/{project_id}/configs/{id}`
+- [ ] написать тесты: CRUD + run (mock gitlab)
 - [ ] `uv run pytest tests/test_api_pipelines.py` — проходит
 
-### Task 7b: API эндпоинты — GitLab Router
+### Task 10: API — GitLab Router (schedules, branches, bookmarks)
 
 **Files:**
 - Create: `src/app/features/gitlab/router.py`
 - Create: `src/app/features/gitlab/__init__.py`
 - Create: `tests/test_api_gitlab.py`
 
-- [ ] перенести `features/gitlab/router.py` из qa-tools
-- [ ] убрать все `Depends(get_current_user)` и `UserSession`
-- [ ] **удалить** `GET /api/v1/gitlab/pipelines` (опирался на X5-специфичный `get_recent_pipelines_with_tests`)
-- [ ] **удалить** `GET /api/v1/gitlab/pipelines/{id}/allure` (Allure TestOps кэш)
-- [ ] оставить: `/schedules`, `/schedules/{id}`, `/branches`, `/pipelines/{id}` (get one pipeline)
-- [ ] добавить bookmarks `/schedule-bookmarks` endpoints (перенести из api.py если они там остались)
-- [ ] написать тесты: GET /schedules?q=..., GET /branches (mock httpx через respx)
+- [ ] `GET /api/v1/gitlab/{project_id}/branches`
+- [ ] `GET /api/v1/gitlab/{project_id}/schedules?q=...`
+- [ ] `GET /api/v1/gitlab/{project_id}/schedules/{id}`
+- [ ] `POST /api/v1/gitlab/{project_id}/schedules/{id}/run`
+- [ ] `GET /api/v1/gitlab/{project_id}/pipelines/{id}`
+- [ ] `GET /api/v1/projects/{project_id}/bookmarks`, `POST`, `DELETE /{id}`
+- [ ] `POST /api/v1/gitlab/{project_id}/pipelines/{id}/allure` — запустить генерацию отчёта
+- [ ] `GET /api/v1/gitlab/{project_id}/pipelines/{id}/allure/status`
+- [ ] написать тесты (respx + mock middleware)
 - [ ] `uv run pytest tests/test_api_gitlab.py` — проходит
 
-### Task 8: FastAPI приложение (main.py)
+### Task 11: FastAPI приложение (main.py)
 
 **Files:**
 - Create: `src/app/main.py`
+- Create: `src/app/features/pipelines/router.py` (HTML страница)
 
-- [ ] собрать `main.py` — lifespan, middleware, mount static, include routers
-- [ ] убрать `auth_router`, убрать `allure_fetcher` импорты
-- [ ] **в lifespan**: запускать `alembic upgrade head` subprocess (или через Alembic API) вместо `Base.metadata.create_all`
-- [ ] создать `src/app/features/pipelines/router.py` — HTML страница, без `get_current_user`, без `allure_base_url` в контексте
-- [ ] создать `src/app/features/tools/router.py` — простая страница инструментов
-- [ ] проверить: `uv run python -m app.main` запускается, `curl http://localhost:8080/` отвечает 303
+- [ ] собрать `main.py` — lifespan, middleware (GitLabAuthMiddleware), mount static, include routers
+- [ ] lifespan: `alembic upgrade head` через Alembic API (не subprocess)
+- [ ] `GET /health` — без auth, для Docker healthcheck
+- [ ] роутер HTML: `GET /` → редирект на первый проект или страницу добавления проекта
+- [ ] проверить: `uv run python -m app.main` запускается
 
-### Task 9: HTML шаблоны, статика и UI
+### Task 12: Docker
+
+**Files:**
+- Create: `Dockerfile`
+- Create: `docker-compose.yml`
+- Create: `.dockerignore`
+
+- [ ] `Dockerfile` — multi-stage: 1) Python + uv install deps, 2) + Allure CLI (wget + OpenJDK)
+- [ ] копировать `src/` и `config.json.example`
+- [ ] `ENTRYPOINT ["uv", "run", "python", "-m", "app.main"]`
+- [ ] `docker-compose.yml`:
+  - volumes: `./data:/app/data` (data.db), `./allure_reports:/app/allure_reports`
+  - ports: `8080:8080`
+  - env_file или volumes config.json
+- [ ] `.dockerignore`: `.venv`, `__pycache__`, `data.db`, `allure_reports/`, `tests/`
+- [ ] проверить: `docker compose build` успешно
+- [ ] проверить: `docker compose up` + `curl http://localhost:8080/health` → 200
+
+### Task 13: HTML + Frontend (IndexedDB token storage)
 
 **Files:**
 - Create: `src/app/templates/base.html`
+- Create: `src/app/templates/index.html` (setup / token input)
 - Create: `src/app/templates/pipelines/index.html`
-- Create: `src/app/templates/tools/index.html`
+- Create: `src/app/static/js/auth.js` (IndexedDB + AES-256-GCM)
 - Create: `src/app/static/js/htmx.min.js`
-- Create: `src/app/static/js/pipelines.js` (или где лежит)
-- Create: `src/app/static/css/` (все файлы)
-- Create: `src/app/static/allure_reports/.gitkeep`
-- Create: `tests/test_ui_smoke.py`
+- Create: `src/app/static/js/pipelines.js`
+- Create: `src/app/static/css/`
 
-- [ ] скопировать все статические файлы: `htmx.min.js`, `pipelines.js`, `css/*`
-- [ ] создать `static/allure_reports/.gitkeep` для пустой папки отчётов
-- [ ] перенести и адаптировать шаблоны: убрать блок авторизации/пользователя из навигации
-- [ ] убрать ссылки на Allure TestOps (`allure.x5.ru`) из карточек
-- [ ] убрать блоки `allure_cache` (статистика тестов из Allure TestOps)
-- [ ] убрать `allure_base_url` из контекста шаблонов
-- [ ] написать smoke-тест: `GET /pipelines/` возвращает 200 через `AsyncClient`
-- [ ] `uv run pytest tests/test_ui_smoke.py` — проходит
-- [ ] вручную открыть в браузере: карточки рендерятся, кнопки работают
+- [ ] `auth.js`:
+  - Web Crypto API: PBKDF2 → AES-256-GCM key
+  - `saveToken(token, masterPassword)` → IndexedDB
+  - `loadToken(masterPassword)` → строка токена или null
+  - при первом визите: показать форму ввода master password + GitLab token
+- [ ] `base.html`: навигация с вкладками проектов, кнопка logout (очистка IndexedDB)
+- [ ] `index.html`: форма добавления проекта (gitlab_project_id, display_name, allure_results_path optional)
+- [ ] `pipelines/index.html`: список custom pipelines текущего проекта, кнопки run / allure
+- [ ] убрать все ссылки на keycloak/allure testops/x5.ru
+- [ ] smoke-тест: `GET /` возвращает 200 или 302
 
-### Task 10: Финальная проверка
+### Task 14: Финальная проверка
 
-**Files:**
-- Modify: `README.md`
-
-- [ ] запустить полный `uv run pytest` — все тесты проходят
-- [ ] запустить `uv run python -m app.main`, открыть `http://localhost:8080`
-- [ ] проверить happy path: создать custom pipeline → запустить → дождаться статуса → нажать Generate Allure
-- [ ] проверить: нет `x5.ru`, `allure.x5.ru`, `scm.x5.ru` в коде (`grep -r "x5.ru" src/`)
-- [ ] написать README: требования (Python 3.11+, uv, allure CLI), шаги установки, настройка config.json
+- [ ] `uv run pytest` — все тесты проходят
+- [ ] `docker compose up` — сервис стартует
+- [ ] `curl http://localhost:8080/health` → `{"status": "ok"}`
+- [ ] `grep -r "x5.ru\|keycloak\|allure.x5" src/` — 0 результатов
+- [ ] написать README: docker compose быстрый старт, настройка config.json
 - [ ] переместить план в `docs/plans/completed/`
 
 ## Post-Completion
 
 **Ручная проверка:**
-- Протестировать с реальным GitLab (gitlab.com или self-hosted)
-- Убедиться что `data.db` сохраняется между перезапусками
-- Проверить генерацию Allure отчёта с реальными артефактами пайплайна
+- Открыть браузер, ввести master password + GitLab токен
+- Добавить проект, создать custom pipeline, запустить, дождаться статуса
+- Если allure_results_path настроен — сгенерировать отчёт
+- Перезапустить `docker compose restart` — данные сохранились
 
 **Внешние шаги:**
-- Проверить видимость репо перед публикацией (убрать test-токены)
-- Настроить GitHub Actions для CI (опционально)
+- Проверить видимость репо перед публикацией
+- Настроить GitHub Actions (опционально)

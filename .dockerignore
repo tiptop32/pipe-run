@@ -1,0 +1,13 @@
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+data.db
+data/
+allure_reports/
+tests/
+docs/
+.git
+.gitignore
+*.md
+config.json
