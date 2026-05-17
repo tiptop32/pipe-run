@@ -2,7 +2,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 @dataclass
@@ -83,14 +83,14 @@ class PipelineConfigOut(BaseModel):
 class PipelineConfigCreate(BaseModel):
     name: str
     ref: str = "main"
-    variables: list[dict] = []
+    variables: list[dict] = Field(default_factory=list)
     seeded_from_schedule_id: int | None = None
 
 
 class PipelineConfigUpdate(BaseModel):
     name: str
     ref: str
-    variables: list[dict] = []
+    variables: list[dict] = Field(default_factory=list)
 
 
 class ScheduleBookmarkOut(BaseModel):

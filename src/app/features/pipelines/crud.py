@@ -40,6 +40,18 @@ async def get_user_project(session: AsyncSession, project_id: uuid.UUID) -> User
     return result.scalar_one_or_none()
 
 
+async def get_user_project_by_gitlab_id(
+    session: AsyncSession, user_id: int, gitlab_project_id: int
+) -> UserProject | None:
+    result = await session.execute(
+        select(UserProject).where(
+            UserProject.user_id == user_id,
+            UserProject.gitlab_project_id == gitlab_project_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def delete_user_project(session: AsyncSession, project_id: uuid.UUID) -> bool:
     result = await session.execute(select(UserProject).where(UserProject.id == project_id))
     project = result.scalar_one_or_none()

@@ -92,11 +92,20 @@ async def test_run_schedule(async_session):
 
 
 async def test_allure_status_not_started(async_session):
+    # IDOR fix: user must own the project — create it first
+    await _create_project(async_session)
     app = _make_app(async_session)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get(f"/api/v1/gitlab/{GITLAB_PROJECT_ID}/pipelines/99/allure/status")
         assert resp.status_code == 200
         assert resp.json()["status"] == "not_started"
+
+
+async def test_allure_status_404_without_project(async_session):
+    app = _make_app(async_session)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get(f"/api/v1/gitlab/99999/pipelines/99/allure/status")
+        assert resp.status_code == 404
 
 
 # --- Bookmarks ---

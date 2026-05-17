@@ -21,28 +21,30 @@ class GitLabClient:
         self._base = base_url.rstrip("/")
         self._headers = {"PRIVATE-TOKEN": access_token}
         self._project_id = project_id
-        self._verify_ssl = verify_ssl
+        # single client per instance — reuses TLS connections within one request lifecycle
+        self._client = httpx.AsyncClient(
+            verify=verify_ssl,
+            follow_redirects=True,
+            timeout=httpx.Timeout(30.0),
+        )
 
     def _project_url(self, path: str) -> str:
         return f"{self._base}/api/v4/projects/{self._project_id}/{path.lstrip('/')}"
 
     async def _get(self, url: str, **kwargs) -> dict | list:
-        async with httpx.AsyncClient(verify=self._verify_ssl) as client:
-            resp = await client.get(url, headers=self._headers, **kwargs)
+        resp = await self._client.get(url, headers=self._headers, **kwargs)
         if not resp.is_success:
             raise GitLabAPIError(resp.status_code, resp.text)
         return resp.json()
 
     async def _get_bytes(self, url: str, **kwargs) -> bytes:
-        async with httpx.AsyncClient(verify=self._verify_ssl, follow_redirects=True) as client:
-            resp = await client.get(url, headers=self._headers, **kwargs)
+        resp = await self._client.get(url, headers=self._headers, **kwargs)
         if not resp.is_success:
             raise GitLabAPIError(resp.status_code, resp.text)
         return resp.content
 
     async def _post(self, url: str, **kwargs) -> dict:
-        async with httpx.AsyncClient(verify=self._verify_ssl) as client:
-            resp = await client.post(url, headers=self._headers, **kwargs)
+        resp = await self._client.post(url, headers=self._headers, **kwargs)
         if not resp.is_success:
             raise GitLabAPIError(resp.status_code, resp.text)
         return resp.json()

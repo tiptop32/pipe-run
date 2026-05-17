@@ -12,6 +12,7 @@ from app.features.pipelines.crud import (
     delete_schedule_bookmark,
     get_schedule_bookmark,
     get_user_project,
+    get_user_project_by_gitlab_id,
     list_schedule_bookmarks,
 )
 from app.features.pipelines.gitlab import GitLabAPIError
@@ -19,10 +20,6 @@ from app.features.pipelines.schemas import ScheduleBookmarkCreate, ScheduleBookm
 
 router = APIRouter(prefix="/api/v1/gitlab/{gitlab_project_id}", tags=["gitlab"])
 bookmarks_router = APIRouter(prefix="/api/v1/projects/{project_id}/bookmarks", tags=["bookmarks"])
-
-
-def _gl(gitlab_project_id: int, token: str = Depends(get_gitlab_token)):
-    return make_gitlab_client(gitlab_project_id, token)
 
 
 @router.get("/branches")
@@ -97,12 +94,20 @@ async def trigger_allure_report(
     pipeline_id: int,
     job_id: int,
     background_tasks: BackgroundTasks,
+    user_id: int = Depends(get_current_user),
     token: str = Depends(get_gitlab_token),
     session: AsyncSession = Depends(get_db_session),
 ):
+    project = await get_user_project_by_gitlab_id(session, user_id, gitlab_project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not project.allure_results_path:
+        raise HTTPException(status_code=400, detail="allure_results_path not configured for this project")
+
     gl = make_gitlab_client(gitlab_project_id, token)
+    # generate_report opens its own DB session — the request session closes before the BG task runs
     background_tasks.add_task(
-        generate_report, session, gl, pipeline_id, job_id, gitlab_project_id
+        generate_report, gl, pipeline_id, job_id, gitlab_project_id, project.allure_results_path
     )
     return {"status": "pending"}
 
@@ -111,9 +116,13 @@ async def trigger_allure_report(
 async def allure_report_status(
     gitlab_project_id: int,
     pipeline_id: int,
+    user_id: int = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
-    _: int = Depends(get_current_user),
 ):
+    project = await get_user_project_by_gitlab_id(session, user_id, gitlab_project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+
     status = await get_report_status(session, pipeline_id)
     result = {"status": status}
     if status == "ready":

@@ -25,7 +25,11 @@ RUN wget -q "https://github.com/allure-framework/allure2/releases/download/${ALL
     && ln -s "/opt/allure-${ALLURE_VERSION}/bin/allure" /usr/local/bin/allure \
     && rm /tmp/allure.zip
 
-RUN mkdir -p /app/data /app/allure_reports
+RUN mkdir -p /app/data /app/allure_reports \
+    && useradd -m -u 1000 app \
+    && chown -R app:app /app
+
+USER app
 
 EXPOSE 8080
 

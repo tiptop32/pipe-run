@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -32,7 +33,8 @@ def _run_migrations() -> None:
 async def lifespan(app: FastAPI):
     setup_logging(config.LOGLEVEL)
     try:
-        _run_migrations()
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _run_migrations)
         log.info("DB migrations applied")
     except Exception as exc:
         log.error("Migration failed: %s", exc)

@@ -1,4 +1,5 @@
 import logging
+import time
 
 import httpx
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -11,6 +12,11 @@ log = logging.getLogger(__name__)
 
 _SKIP_PATHS = {"/", "/health", "/favicon.ico"}
 _SKIP_PREFIXES = ("/static",)
+
+# token hash → (user_id, expires_monotonic)
+_token_cache: dict[int, tuple[int, float]] = {}
+_CACHE_TTL = 60.0
+_CACHE_MAX = 1000
 
 
 class GitLabAuthMiddleware(BaseHTTPMiddleware):
@@ -34,6 +40,25 @@ class GitLabAuthMiddleware(BaseHTTPMiddleware):
 
 
 async def _resolve_user_id(token: str) -> int | None:
+    key = hash(token)
+    now = time.monotonic()
+
+    entry = _token_cache.get(key)
+    if entry is not None:
+        user_id, expires_at = entry
+        if now < expires_at:
+            return user_id
+        del _token_cache[key]
+
+    user_id = await _fetch_user_id(token)
+    if user_id is not None:
+        if len(_token_cache) >= _CACHE_MAX:
+            _token_cache.clear()
+        _token_cache[key] = (user_id, now + _CACHE_TTL)
+    return user_id
+
+
+async def _fetch_user_id(token: str) -> int | None:
     url = f"{config.GITLAB_BASE_URL.rstrip('/')}/api/v4/user"
     try:
         async with httpx.AsyncClient(timeout=10) as client:

@@ -174,127 +174,90 @@ allure_reports:       pipeline_id (int PK), gitlab_project_id (int),
 Уже реализован и протестирован (`src/app/features/pipelines/gitlab.py`, `tests/test_gitlab_client.py`).
 Не требует изменений — токен передаётся при создании `GitLabClient(base_url, access_token, project_id)`.
 
-### Task 7: Allure Report генератор
+### Task 7–13: Реализация ✅ (выполнено)
+
+Allure report, Projects API, Pipelines API, GitLab router, main.py, Docker, Frontend — реализованы и протестированы. 61 тест проходит.
+
+### Task 14: README и финальная проверка ✅ (выполнено)
+
+README написан. Тесты проходят.
+
+---
+
+## Code Review findings (2026-05-17)
+
+Три параллельных ревью выявили следующие проблемы, требующие исправления.
+
+### Task 15: Критические исправления безопасности
 
 **Files:**
-- Create: `src/app/features/pipelines/allure_report.py`
-- Create: `tests/test_allure_report.py`
+- Modify: `src/app/features/pipelines/allure_report.py`
+- Modify: `src/app/features/pipelines/crud.py`
+- Modify: `src/app/features/gitlab/router.py`
+- Modify: `src/app/auth/middleware.py`
+- Modify: `src/app/main.py`
+- Modify: `Dockerfile`
+- Modify: `tests/test_allure_report.py`
+- Modify: `tests/test_api_gitlab.py`
 
-- [ ] создать `allure_report.py`:
-  - `AllureStatus = Literal["not_started", "pending", "ready", "error"]`
-  - `async def generate_report(gitlab_client, job_id, report_dir) -> Path` — скачать артефакты, распаковать zip, запустить `allure generate`
-  - `async def get_report_status(pipeline_id, session) -> AllureStatus` — читать из `allure_reports` таблицы
-- [ ] написать тесты: `get_report_status` для всех статусов, mock для download + extract
-- [ ] `uv run pytest tests/test_allure_report.py` — проходит
+- [x] **IDOR**: добавить `Depends(get_current_user)` и проверку владения в `trigger_allure_report` — пользователь должен иметь проект с таким `gitlab_project_id`
+- [x] **IDOR**: добавить проверку владения в `allure_report_status`
+- [x] **BackgroundTasks session**: `generate_report` открывает собственную сессию через `async_session_factory` — session из Depends закрывается до запуска фоновой задачи
+- [x] **asyncio.run в lifespan**: запускать `_run_migrations` через `await loop.run_in_executor(None, _run_migrations)` — Alembic вызывает asyncio.run() внутри, что падает в уже запущенном loop
+- [x] **Zip slip**: добавить явную проверку `target.resolve().startswith(results_dir.resolve())` в `_extract_allure_results`
+- [x] **allure_results_path**: брать из user_project и передавать в `generate_report` → `_extract_allure_results` вместо хардкода `"allure-results/"`
+- [x] **TTL cache**: кешировать token→user_id в middleware (60 сек, max 1000 записей) чтобы не долбить GitLab каждым запросом
+- [x] **Dockerfile**: добавить непривилегированного пользователя (`RUN useradd … && USER app`) — контейнер не должен работать от root
+- [x] Обновить тесты: `test_allure_report.py` (новая сигнатура), `test_api_gitlab.py` (IDOR fix)
+- [x] `uv run pytest` — 63 теста проходят ✅
 
-### Task 8: API — User Projects
-
-**Files:**
-- Create: `src/app/features/projects/router.py`
-- Create: `src/app/features/projects/__init__.py`
-- Create: `tests/test_api_projects.py`
-
-- [ ] `POST /api/v1/projects` — создать проект (gitlab_project_id, display_name, allure_results_path?)
-- [ ] `GET /api/v1/projects` — список проектов пользователя
-- [ ] `DELETE /api/v1/projects/{id}` — удалить проект
-- [ ] использовать `Depends(get_current_user)` для user_id
-- [ ] написать тесты через `AsyncClient` с мок-middleware
-- [ ] `uv run pytest tests/test_api_projects.py` — проходит
-
-### Task 9: API — Custom Pipelines
+### Task 16: Качество кода (HIGH/MEDIUM)
 
 **Files:**
-- Create: `src/app/features/pipelines/api.py`
-- Create: `src/app/features/pipelines/__init__.py`
-- Create: `tests/test_api_pipelines.py`
+- Modify: `src/app/features/projects/router.py`
+- Modify: `src/app/features/pipelines/gitlab.py`
+- Modify: `src/app/features/pipelines/schemas.py`
+- Modify: `src/app/db/base.py`
+- Modify: `src/app/features/pipelines/allure_report.py`
+- Modify: `src/app/static/js/app.js`
+- Modify: `src/app/static/js/auth.js`
 
-- [ ] перенести эндпоинты из qa-tools, адаптировать: добавить `user_id` через `Depends`, добавить `project_id` из пути или тела
-- [ ] убрать `allure_cache` из ответов, убрать `fetch_and_cache_allure` вызовы
-- [ ] `POST /api/v1/projects/{project_id}/configs`
-- [ ] `GET /api/v1/projects/{project_id}/configs`
-- [ ] `POST /api/v1/projects/{project_id}/configs/{id}/run` — запускает pipeline через GitLabClient
-- [ ] `PATCH /api/v1/projects/{project_id}/configs/{id}/pipeline-status`
-- [ ] `DELETE /api/v1/projects/{project_id}/configs/{id}`
-- [ ] написать тесты: CRUD + run (mock gitlab)
-- [ ] `uv run pytest tests/test_api_pipelines.py` — проходит
+- [x] **UUID path param**: `project_id: uuid.UUID` вместо `str` + убрать `import uuid as _uuid` внутри функции в `projects/router.py`
+- [x] **httpx connection pooling**: `GitLabClient.__init__` создаёт `self._client = httpx.AsyncClient(...)` — переиспользовать клиент внутри одного запроса
+- [x] **AllureStatus StrEnum**: заменить `Literal[...]` на `StrEnum` (stdlib, Python 3.11+)
+- [x] **return type annotation**: `AsyncGenerator[AsyncSession, None]` в `get_db_session`
+- [x] **`import io`**: перенести на верх `allure_report.py`
+- [x] **`Field(default_factory=list)`**: в `schemas.py` для `variables`
+- [x] **`esc()` XSS**: добавить экранирование `"` → `&quot;` и `'` → `&#x27;` в `app.js`
+- [x] **PBKDF2**: увеличить итерации до 600 000 (OWASP 2026) в `auth.js`
+- [x] `uv run pytest` — 63 теста проходят ✅
 
-### Task 10: API — GitLab Router (schedules, branches, bookmarks)
-
-**Files:**
-- Create: `src/app/features/gitlab/router.py`
-- Create: `src/app/features/gitlab/__init__.py`
-- Create: `tests/test_api_gitlab.py`
-
-- [ ] `GET /api/v1/gitlab/{project_id}/branches`
-- [ ] `GET /api/v1/gitlab/{project_id}/schedules?q=...`
-- [ ] `GET /api/v1/gitlab/{project_id}/schedules/{id}`
-- [ ] `POST /api/v1/gitlab/{project_id}/schedules/{id}/run`
-- [ ] `GET /api/v1/gitlab/{project_id}/pipelines/{id}`
-- [ ] `GET /api/v1/projects/{project_id}/bookmarks`, `POST`, `DELETE /{id}`
-- [ ] `POST /api/v1/gitlab/{project_id}/pipelines/{id}/allure` — запустить генерацию отчёта
-- [ ] `GET /api/v1/gitlab/{project_id}/pipelines/{id}/allure/status`
-- [ ] написать тесты (respx + mock middleware)
-- [ ] `uv run pytest tests/test_api_gitlab.py` — проходит
-
-### Task 11: FastAPI приложение (main.py)
+### Task 17: CI/CD и OSS-файлы
 
 **Files:**
-- Create: `src/app/main.py`
-- Create: `src/app/features/pipelines/router.py` (HTML страница)
+- Create: `.github/workflows/ci.yml`
+- Create: `.github/workflows/docker.yml`
+- Create: `CONTRIBUTING.md`
+- Create: `SECURITY.md`
+- Create: `CHANGELOG.md`
+- Create: `.github/ISSUE_TEMPLATE/bug_report.yml`
+- Create: `.github/ISSUE_TEMPLATE/feature_request.yml`
+- Create: `.github/PULL_REQUEST_TEMPLATE.md`
+- Create: `.github/dependabot.yml`
 
-- [ ] собрать `main.py` — lifespan, middleware (GitLabAuthMiddleware), mount static, include routers
-- [ ] lifespan: `alembic upgrade head` через Alembic API (не subprocess)
-- [ ] `GET /health` — без auth, для Docker healthcheck
-- [ ] роутер HTML: `GET /` → редирект на первый проект или страницу добавления проекта
-- [ ] проверить: `uv run python -m app.main` запускается
+- [x] `ci.yml`: запускать `uv run pytest` на каждый push/PR, Python 3.11
+- [x] `docker.yml`: сборка и публикация образа при создании тега `v*`
+- [x] `CONTRIBUTING.md`: гайд по вкладу (fork, ветка, PR, тесты)
+- [x] `SECURITY.md`: disclosure policy — отправлять на email, не через issues
+- [x] `CHANGELOG.md`: Keep a Changelog формат, первая версия 0.1.0
+- [x] issue templates: bug_report.yml, feature_request.yml
+- [x] PR template + dependabot.yml (pip weekly)
 
-### Task 12: Docker
-
-**Files:**
-- Create: `Dockerfile`
-- Create: `docker-compose.yml`
-- Create: `.dockerignore`
-
-- [ ] `Dockerfile` — multi-stage: 1) Python + uv install deps, 2) + Allure CLI (wget + OpenJDK)
-- [ ] копировать `src/` и `config.json.example`
-- [ ] `ENTRYPOINT ["uv", "run", "python", "-m", "app.main"]`
-- [ ] `docker-compose.yml`:
-  - volumes: `./data:/app/data` (data.db), `./allure_reports:/app/allure_reports`
-  - ports: `8080:8080`
-  - env_file или volumes config.json
-- [ ] `.dockerignore`: `.venv`, `__pycache__`, `data.db`, `allure_reports/`, `tests/`
-- [ ] проверить: `docker compose build` успешно
-- [ ] проверить: `docker compose up` + `curl http://localhost:8080/health` → 200
-
-### Task 13: HTML + Frontend (IndexedDB token storage)
-
-**Files:**
-- Create: `src/app/templates/base.html`
-- Create: `src/app/templates/index.html` (setup / token input)
-- Create: `src/app/templates/pipelines/index.html`
-- Create: `src/app/static/js/auth.js` (IndexedDB + AES-256-GCM)
-- Create: `src/app/static/js/htmx.min.js`
-- Create: `src/app/static/js/pipelines.js`
-- Create: `src/app/static/css/`
-
-- [ ] `auth.js`:
-  - Web Crypto API: PBKDF2 → AES-256-GCM key
-  - `saveToken(token, masterPassword)` → IndexedDB
-  - `loadToken(masterPassword)` → строка токена или null
-  - при первом визите: показать форму ввода master password + GitLab token
-- [ ] `base.html`: навигация с вкладками проектов, кнопка logout (очистка IndexedDB)
-- [ ] `index.html`: форма добавления проекта (gitlab_project_id, display_name, allure_results_path optional)
-- [ ] `pipelines/index.html`: список custom pipelines текущего проекта, кнопки run / allure
-- [ ] убрать все ссылки на keycloak/allure testops/x5.ru
-- [ ] smoke-тест: `GET /` возвращает 200 или 302
-
-### Task 14: Финальная проверка
+### Task 18: Финальная проверка после исправлений
 
 - [ ] `uv run pytest` — все тесты проходят
-- [ ] `docker compose up` — сервис стартует
-- [ ] `curl http://localhost:8080/health` → `{"status": "ok"}`
-- [ ] `grep -r "x5.ru\|keycloak\|allure.x5" src/` — 0 результатов
-- [ ] написать README: docker compose быстрый старт, настройка config.json
+- [ ] нет regression в существующих 61+ тестах
+- [ ] `grep -rn "import io" src/app/features/pipelines/allure_report.py` — импорт на верхнем уровне
 - [ ] переместить план в `docs/plans/completed/`
 
 ## Post-Completion

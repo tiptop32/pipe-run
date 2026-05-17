@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,18 +41,12 @@ async def create_project(
 
 @router.delete("/{project_id}", status_code=204)
 async def delete_project(
-    project_id: str,
+    project_id: uuid.UUID,
     user_id: int = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
 ):
-    import uuid as _uuid
-    try:
-        pid = _uuid.UUID(project_id)
-    except ValueError:
-        raise HTTPException(status_code=422, detail="Invalid project_id")
-
-    project = await get_user_project(session, pid)
+    project = await get_user_project(session, project_id)
     if project is None or project.user_id != user_id:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    await delete_user_project(session, pid)
+    await delete_user_project(session, project_id)
